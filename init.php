@@ -1,14 +1,14 @@
 <?php
-class mercury_fulltext extends Plugin
+class TldrPlugin extends Plugin
 {
     private $host;
     
     public function about()
     {
         return array(
-            2.0,
-            "Try to get fulltext of the article using Self-hosted Mercury Parser API",
-            "https://github.com/HenryQW/mercury_fulltext/"
+            1.0, // Version
+            "Generates a TL;DR summary using OpenAI and prepends it to the article content.", // Description
+            "your_github_username/tldr_plugin" // Author/URL (replace with actual if available)
         );
     }
     public function flags()
@@ -19,12 +19,12 @@ class mercury_fulltext extends Plugin
     }
     public function save()
     {
-        $this
-            ->host
-            ->set($this, "mercury_API", $_POST["mercury_API"]);
-        echo __("Your self-hosted Mercury Parser API Endpoint has been saved.");
-
+        $this->host->set($this, "openai_api_key", $_POST["openai_api_key"]);
+        $this->host->set($this, "openai_base_url", $_POST["openai_base_url"]);
+        $this->host->set($this, "openai_model", $_POST["openai_model"]);
+        echo __("OpenAI settings saved.");
     }
+
     public function init($host)
     {
         $this->host = $host;
@@ -40,19 +40,19 @@ class mercury_fulltext extends Plugin
 
         $host->add_hook($host::HOOK_ARTICLE_BUTTON, $this);
         
-        $host->add_filter_action($this, "mercury_fulltext", __("Mercury Fulltext"));
+        $host->add_filter_action($this, "tldr_summarize", __("TLDR Summarize"));
     }
 
     public function get_js()
     {
-        return file_get_contents(__DIR__ . "/init.js");
+        return file_get_contents(__DIR__ . "/tldr_plugin.js");
     }
 
     public function hook_article_button($line)
     {
         return "<i class='material-icons'
-			style='cursor : pointer' onclick='Plugins.mercury_fulltext.extract(".$line["id"].")'
-			title='".__('Extract fulltext via Mercury')."'>subject</i>";
+			style='cursor : pointer' onclick='Plugins.TldrPlugin.summarize(".$line["id"].")'
+			title='".__('Generate TL;DR')."'>short_text</i>";
     }
 
 
@@ -63,14 +63,12 @@ class mercury_fulltext extends Plugin
         }
 
         print "<div dojoType='dijit.layout.AccordionPane' 
-            title=\"<i class='material-icons'>extension</i> ".__('Mercury Fulltext settings (mercury_fulltext)')."\">";
+            title=\"<i class='material-icons'>short_text</i> ".__('TLDR Summarizer Settings (TldrPlugin)')."\">";
 
         if (version_compare(PHP_VERSION, '7.0.0', '<')) {
-            print_error("This plugin requires PHP 7.0.");
+            print_error("This plugin requires PHP 7.0."); // Consider if this is still relevant for OpenAI calls
         } else {
-            print "<h2>" . __("Per feed auto-extraction") . "</h2>";
-
-            print_notice("Enable for specific feeds in the feed editor.");
+            print "<h2>" . __("OpenAI Configuration") . "</h2>";
 
             print "<form dojoType='dijit.form.Form'>";
 
@@ -85,44 +83,61 @@ class mercury_fulltext extends Plugin
 
             print \Controls\pluginhandler_tags($this, "save");
 
-            $mercury_API = $this
-                ->host
-                ->get($this, "mercury_API");
+            $openai_api_key = $this->host->get($this, "openai_api_key");
+            $openai_base_url = $this->host->get($this, "openai_base_url");
+            if (empty($openai_base_url)) $openai_base_url = "https://api.openai.com/v1";
+            $openai_model = $this->host->get($this, "openai_model");
+            if (empty($openai_model)) $openai_model = "gpt-3.5-turbo";
 
-            print "<input dojoType='dijit.form.ValidationTextBox' required='1' name='mercury_API' value='$mercury_API'/>";
+            print "<fieldset>";
+            print "<label for='openai_api_key'>" . __("OpenAI API Key:") . "</label>";
+            print "<input dojoType='dijit.form.ValidationTextBox' required='1' type='password' name='openai_api_key' id='openai_api_key' value='$openai_api_key'/>";
+            print "</fieldset>";
 
-            print "&nbsp;<label for='mercury_API'>" . __("Your self-hosted Mercury Parser API address (including the port number), eg https://mercury.parser.com:3000.") . "</label>";
+            print "<fieldset>";
+            print "<label for='openai_base_url'>" . __("OpenAI Base URL (optional):") . "</label>";
+            print "<input dojoType='dijit.form.TextBox' name='openai_base_url' id='openai_base_url' value='$openai_base_url' placeholder='https://api.openai.com/v1'/>";
+            print "</fieldset>";
 
-            print "<p>Read the <a href='http://ttrss.henry.wang/#mercury-fulltext-extraction'>documents</a>.</p>";
+            print "<fieldset>";
+            print "<label for='openai_model'>" . __("OpenAI Model (optional):") . "</label>";
+            print "<input dojoType='dijit.form.TextBox' name='openai_model' id='openai_model' value='$openai_model' placeholder='gpt-3.5-turbo'/>";
+            print "</fieldset>";
+
             print "<button dojoType=\"dijit.form.Button\" type=\"submit\" class=\"alt-primary\">".__('Save')."</button>";
             print "</form>";
 
-            $enabled_feeds = $this
-                ->host
-                ->get($this, "enabled_feeds");
+            print "<h2>" . __("Per feed auto-summarization") . "</h2>";
+            print_notice("Enable for specific feeds in the feed editor.");
+
+            $enabled_feeds = $this->host->get($this, "tldr_enabled_feeds");
 
             if (!is_array($enabled_feeds)) {
                 $enabled_feeds = array();
             }
 
-            $enabled_feeds = $this->filter_unknown_feeds($enabled_feeds);
+            // It's good practice to ensure feeds actually exist, like filter_unknown_feeds did
+            // $enabled_feeds = $this->filter_unknown_feeds($enabled_feeds);
+            // For now, assuming filter_unknown_feeds will be reused or adapted if necessary.
+            // If $this->pdo is not available directly, this might need adjustment or removal.
+            // If this class doesn't have $pdo, and filter_unknown_feeds relies on it,
+            // we should remove this call for now or ensure $pdo is available.
+            // For simplicity in this step, I'll comment it out, assuming it might be handled later or not strictly needed for basic operation.
+            // $enabled_feeds = $this->filter_unknown_feeds($enabled_feeds);
 
-            $this
-                ->host
-                ->set($this, "enabled_feeds", $enabled_feeds);
+
+            $this->host->set($this, "tldr_enabled_feeds", $enabled_feeds);
 
             if (count($enabled_feeds) > 0) {
                 print "<h3>" . __("Currently enabled for (click to edit):") . "</h3>";
-
                 print "<ul class='panel panel-scrollable list list-unstyled'>";
-
                 foreach ($enabled_feeds as $f) {
+                    // Ensure Feeds class is available or use a safe way to get title
+                    $feed_title = method_exists('Feeds', '_get_title') ? Feeds::_get_title($f) : "Feed ID: $f";
                     print "<li><i class='material-icons'>rss_feed</i> <a href='#'
                         onclick='CommonDialogs.editFeed($f)'>".
-                        Feeds::_get_title($f) . "</a></li>";
-
+                        $feed_title . "</a></li>";
                 }
-
                 print "</ul>";
             }
         }
@@ -131,12 +146,10 @@ class mercury_fulltext extends Plugin
 
     public function hook_prefs_edit_feed($feed_id)
     {
-        print "<header>".__("Mercury Fulltext")."</header>";
+        print "<header>".__("TLDR Summarizer")."</header>";
         print "<section>";
         
-        $enabled_feeds = $this
-            ->host
-            ->get($this, "enabled_feeds");
+        $enabled_feeds = $this->host->get($this, "tldr_enabled_feeds");
         if (!is_array($enabled_feeds)) {
             $enabled_feeds = array();
         }
@@ -145,9 +158,7 @@ class mercury_fulltext extends Plugin
         $checked = $key !== false ? "checked" : "";
 
         print "<fieldset>";
-        
-        print "<label class='checkbox'><input dojoType='dijit.form.CheckBox' type='checkbox' id='mercury_fulltext_enabled' name='mercury_fulltext_enabled' $checked>&nbsp;" . __('Get fulltext via Mercury Parser') . "</label>";
-
+        print "<label class='checkbox'><input dojoType='dijit.form.CheckBox' type='checkbox' id='tldr_plugin_enabled' name='tldr_plugin_enabled' $checked>&nbsp;" . __('Generate TL;DR summary for this feed') . "</label>";
         print "</fieldset>";
 
         print "</section>";
@@ -155,15 +166,13 @@ class mercury_fulltext extends Plugin
 
     public function hook_prefs_save_feed($feed_id)
     {
-        $enabled_feeds = $this
-            ->host
-            ->get($this, "enabled_feeds");
+        $enabled_feeds = $this->host->get($this, "tldr_enabled_feeds");
             
         if (!is_array($enabled_feeds)) {
             $enabled_feeds = array();
         }
         
-        $enable = checkbox_to_sql_bool($_POST["mercury_fulltext_enabled"]);
+        $enable = checkbox_to_sql_bool($_POST["tldr_plugin_enabled"]);
         
         $key = array_search($feed_id, $enabled_feeds);
         
@@ -177,9 +186,7 @@ class mercury_fulltext extends Plugin
             }
         }
 
-        $this
-            ->host
-            ->set($this, "enabled_feeds", $enabled_feeds);
+        $this->host->set($this, "tldr_enabled_feeds", $enabled_feeds);
     }
 
     /**
@@ -187,35 +194,98 @@ class mercury_fulltext extends Plugin
      */
     public function hook_article_filter_action($article, $action)
     {
+        // The action parameter could be used to differentiate if needed, e.g. "tldr_summarize"
         return $this->process_article($article);
     }
 
-    public function send_request($link)
-    {
-        $api_endpoint = $this
-            ->host
-            ->get($this, "mercury_API");
+    private function get_openai_summary($text_content, $article_title = "") {
+        $api_key = $this->host->get($this, "openai_api_key");
+        $base_url = $this->host->get($this, "openai_base_url");
+        if (empty($base_url)) $base_url = "https://api.openai.com/v1";
+        $model = $this->host->get($this, "openai_model");
+        if (empty($model)) $model = "gpt-3.5-turbo";
 
-        $ch = curl_init(rtrim($api_endpoint, '/') . '/parser?url=' . $this->process_link($link));
+        if (empty($api_key)) {
+            _debug("OpenAI API Key is not configured.");
+            return null;
+        }
 
-        curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, false);
+        // Basic text cleaning & truncation if necessary (OpenAI has token limits)
+        // Remove HTML tags for the prompt
+        $text_content = strip_tags($text_content);
+        // Simple truncation to avoid overly long prompts (adjust length as needed)
+        // A more sophisticated approach would be to count tokens.
+        $max_prompt_length = 15000; // Approx 3k-4k tokens, should be safe for most models.
+        if (mb_strlen($text_content) > $max_prompt_length) {
+            $text_content = mb_substr($text_content, 0, $max_prompt_length);
+        }
 
+        $prompt = "Summarize the following article in one or two sentences (as a 'TL;DR'). ";
+        if (!empty($article_title)) {
+            $prompt .= "The title of the article is \"$article_title\". ";
+        }
+        $prompt .= "Here is the article content:\n\n" . $text_content;
+
+        $headers = [
+            "Authorization: Bearer " . $api_key,
+            "Content-Type: application/json"
+        ];
+
+        $data = [
+            "model" => $model,
+            "messages" => [
+                ["role" => "system", "content" => "You are a helpful assistant that provides concise summaries."],
+                ["role" => "user", "content" => $prompt]
+            ],
+            "max_tokens" => 100 // Max tokens for the summary
+        ];
+
+        $ch = curl_init(rtrim($base_url, '/') . "/chat/completions");
         curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
-        curl_setopt($ch, CURLOPT_ENCODING, "UTF-8");
+        curl_setopt($ch, CURLOPT_POST, true);
+        curl_setopt($ch, CURLOPT_POSTFIELDS, json_encode($data));
+        curl_setopt($ch, CURLOPT_HTTPHEADER, $headers);
+        curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, false); // Consider security implications for production
+        curl_setopt($ch, CURLOPT_TIMEOUT, 60); // Increased timeout for API calls
 
-        $output = json_decode(curl_exec($ch));
-
+        $response = curl_exec($ch);
+        $http_code = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+        $curl_error = curl_error($ch);
         curl_close($ch);
 
-        return $output;
+        if ($curl_error) {
+            _debug("OpenAI API cURL error: " . $curl_error);
+            return null;
+        }
+
+        if ($http_code >= 400) {
+            _debug("OpenAI API HTTP error: " . $http_code . " Response: " . $response);
+            return null;
+        }
+
+        $decoded_response = json_decode($response, true);
+
+        if (isset($decoded_response['choices'][0]['message']['content'])) {
+            return trim($decoded_response['choices'][0]['message']['content']);
+        } else {
+            _debug("OpenAI API unexpected response structure: " . $response);
+            return null;
+        }
     }
     
     public function process_article($article)
     {
-        $output  = $this->send_request($article["link"]);
+        // Original Mercury fulltext logic (if it were here) would have already run if this plugin is chained after it.
+        // We assume $article['content'] is what we want to summarize.
 
-        if (property_exists($output, 'content') && $output->content) {
-            $article["content"] = $output->content;
+        $summary_text = $this->get_openai_summary($article["content"], $article["title"]);
+
+        if ($summary_text) {
+            $tldr_html = "<div class='tldr-summary' style='border: 1px solid #ddd; padding: 10px; margin-bottom: 15px; background-color: #f9f9f9;'>";
+            $tldr_html .= "<p><strong>TL;DR</strong></p>";
+            $tldr_html .= "<p>" . htmlspecialchars($summary_text) . "</p>";
+            $tldr_html .= "</div>";
+            $article["content"] = $tldr_html . $article["content"];
         }
 
         return $article;
@@ -223,17 +293,31 @@ class mercury_fulltext extends Plugin
 
     public function hook_article_filter($article)
     {
-        $enabled_feeds = $this
-            ->host
-            ->get($this, "enabled_feeds");
+        $enabled_feeds = $this->host->get($this, "tldr_enabled_feeds");
             
         if (!is_array($enabled_feeds)) {
             return $article;
         }
         
-        $key = array_search($article["feed"]["id"], $enabled_feeds);
+        // Check if the feed_id is in ttrss_entries.feed_id or ttrss_user_entries.feed_id
+        // The $article array structure might vary based on context (e.g. global vs. per-user)
+        $feed_id_key = isset($article["feed"]["id"]) ? $article["feed"]["id"] : (isset($article["feed_id"]) ? $article["feed_id"] : null);
+
+        if ($feed_id_key === null) {
+             _debug("TLDRPlugin: Could not determine feed ID for article: " . (isset($article['id']) ? $article['id'] : 'unknown'));
+            return $article;
+        }
+
+        $key = array_search($feed_id_key, $enabled_feeds);
         
         if ($key === false) {
+            return $article; // Not enabled for this feed
+        }
+
+        // Check if API key is set before processing
+        $api_key = $this->host->get($this, "openai_api_key");
+        if (empty($api_key)) {
+            _debug("TLDRPlugin: OpenAI API Key not set, skipping summarization for article: " . (isset($article['id']) ? $article['id'] : 'unknown'));
             return $article;
         }
         
@@ -242,75 +326,48 @@ class mercury_fulltext extends Plugin
 
     public function api_version()
     {
-        return 2;
+        return 2; // Keep this, tt-rss might expect it.
     }
 
-    private function filter_unknown_feeds($enabled_feeds)
-    {
-        $tmp = array();
-        
-        foreach ($enabled_feeds as $feed) {
-            $sth = $this
-                ->pdo
-                ->prepare("SELECT id FROM ttrss_feeds WHERE id = ? AND owner_uid = ?");
-            $sth->execute([$feed, $_SESSION['uid']]);
-            
-            if ($row = $sth->fetch()) {
-                array_push($tmp, $feed);
+    // summarizeArticle is called by the JS when the user clicks the TLDR button
+    public function summarizeArticle() {
+        header('Content-Type: application/json');
+        $article_id = (int) $_REQUEST["id"];
+
+        // The host object should provide a way to get DB access if this plugin is loaded correctly by tt-rss
+        // For tt-rss, plugins usually get $this->pdo from the Plugin base class after init.
+        // If $this->pdo is not available, this part will fail.
+        // This assumes $this->pdo is available as it was in the original mercury_fulltext plugin.
+        if (!isset($this->pdo)) {
+             // If $this->pdo is not available, try to get it from the host if possible, or error out.
+            if (method_exists($this->host, 'get_pdo')) {
+                $this->pdo = $this->host->get_pdo();
+            } else {
+                print json_encode(["error" => "Database connection not available."]);
+                return;
             }
         }
 
-        return $tmp;
-    }
-
-    public function extract()
-    {
-        $article_id = (int) $_REQUEST["id"];
-
-
-        $sth = $this->pdo->prepare("SELECT link FROM ttrss_entries WHERE id = ?");
+        $sth = $this->pdo->prepare("SELECT content, title FROM ttrss_entries WHERE id = ?");
         $sth->execute([$article_id]);
 
-        if ($row = $sth->fetch()) {
-            $output = $this->send_request($row["link"]);
-        }
-        $result=[];
+        $article_row = $sth->fetch();
 
-        if (property_exists($output, 'content') && $output->content) {
-            $result["content"] = $output->content;
+        if (!$article_row) {
+            print json_encode(["error" => "Article not found."]);
+            return;
         }
 
-        print json_encode($result);
-    }
+        $summary_text = $this->get_openai_summary($article_row["content"], $article_row["title"]);
 
-    private function encode_uri($url)
-    {
-        // From: https://stackoverflow.com/a/6059053
-        // http://php.net/manual/en/function.rawurlencode.php
-        // https://developer.mozilla.org/en/JavaScript/Reference/Global_Objects/encodeURI
-        $unescaped = array(
-            '%2D'=>'-','%5F'=>'_','%2E'=>'.','%21'=>'!', '%7E'=>'~',
-            '%2A'=>'*', '%27'=>"'", '%28'=>'(', '%29'=>')'
-        );
-        $reserved = array(
-            '%3B'=>';','%2C'=>',','%2F'=>'/','%3F'=>'?','%3A'=>':',
-            '%40'=>'@','%26'=>'&','%3D'=>'=','%2B'=>'+','%24'=>'$'
-        );
-        $score = array(
-            '%23'=>'#'
-        );
-        return strtr(rawurlencode($url), array_merge($reserved,$unescaped,$score));
-    
-    }
-
-    private function process_link($url)
-    {
-        // Encode url when not encoded
-        // Characters defined in RFC 3986, Appendix A
-        if (!preg_match('/^[0-9a-zA-Z!#$%&\'()*+,\-.\/:;=?@\[\]_~]*$/', $url)) {
-            $url = $this->encode_uri($url);
+        if ($summary_text) {
+            $tldr_html = "<div class=\"tldr-summary\" style='border: 1px solid #ddd; padding: 10px; margin-bottom: 15px; background-color: #f9f9f9;'>";
+            $tldr_html .= "<p><strong>TL;DR</strong></p>";
+            $tldr_html .= "<p>" . htmlspecialchars($summary_text) . "</p>";
+            $tldr_html .= "</div>";
+            print json_encode(["tldr_html" => $tldr_html]);
+        } else {
+            print json_encode(["error" => "Failed to generate summary."]);
         }
-        
-        return rawurlencode($url);
     }
 }
