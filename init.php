@@ -1,5 +1,5 @@
 <?php
-class TldrPlugin extends Plugin
+class tldrplugin extends Plugin
 {
     private $host;
     
@@ -19,9 +19,25 @@ class TldrPlugin extends Plugin
     }
     public function save()
     {
-        $this->host->set($this, "openai_api_key", $_POST["openai_api_key"]);
-        $this->host->set($this, "openai_base_url", $_POST["openai_base_url"]);
-        $this->host->set($this, "openai_model", $_POST["openai_model"]);
+        $openai_api_key = trim($_POST["openai_api_key"]);
+        $openai_base_url = trim($_POST["openai_base_url"]);
+        $openai_model = trim($_POST["openai_model"]);
+        
+        // Validate API key format
+        if (!empty($openai_api_key) && !preg_match('/^sk-[a-zA-Z0-9\-_]+$/', $openai_api_key)) {
+            echo __("Invalid OpenAI API Key format.");
+            return;
+        }
+        
+        // Validate base URL format
+        if (!empty($openai_base_url) && !filter_var($openai_base_url, FILTER_VALIDATE_URL)) {
+            echo __("Invalid OpenAI Base URL format.");
+            return;
+        }
+        
+        $this->host->set($this, "openai_api_key", $openai_api_key);
+        $this->host->set($this, "openai_base_url", $openai_base_url);
+        $this->host->set($this, "openai_model", $openai_model);
         echo __("OpenAI settings saved.");
     }
 
@@ -41,6 +57,12 @@ class TldrPlugin extends Plugin
         $host->add_hook($host::HOOK_ARTICLE_BUTTON, $this);
         
         $host->add_filter_action($this, "tldr_summarize", __("TLDR Summarize"));
+        
+        // Add the summarizeArticle method handler
+        $host->add_handler("summarizeArticle", "*", $this);
+        $host->add_handler("testApiConnection", "*", $this);
+        
+        _debug("tldrplugin: Plugin initialized successfully");
     }
 
     public function get_js()
@@ -51,7 +73,7 @@ class TldrPlugin extends Plugin
     public function hook_article_button($line)
     {
         return "<i class='material-icons'
-			style='cursor : pointer' onclick='Plugins.TldrPlugin.summarize(".$line["id"].")'
+			style='cursor : pointer' onclick='Plugins.tldrplugin.summarizeArticle(".$line["id"].")'
 			title='".__('Generate TL;DR')."'>short_text</i>";
     }
 
@@ -63,7 +85,7 @@ class TldrPlugin extends Plugin
         }
 
         print "<div dojoType='dijit.layout.AccordionPane' 
-            title=\"<i class='material-icons'>short_text</i> ".__('TLDR Summarizer Settings (TldrPlugin)')."\">";
+            title=\"<i class='material-icons'>short_text</i> ".__('TLDR Summarizer Settings (tldrplugin)')."\">";
 
         if (version_compare(PHP_VERSION, '7.0.0', '<')) {
             print_error("This plugin requires PHP 7.0."); // Consider if this is still relevant for OpenAI calls
@@ -91,20 +113,31 @@ class TldrPlugin extends Plugin
 
             print "<fieldset>";
             print "<label for='openai_api_key'>" . __("OpenAI API Key:") . "</label>";
-            print "<input dojoType='dijit.form.ValidationTextBox' required='1' type='password' name='openai_api_key' id='openai_api_key' value='$openai_api_key'/>";
+            print "<input dojoType='dijit.form.ValidationTextBox' required='1' type='password' name='openai_api_key' id='openai_api_key' value='" . htmlspecialchars($openai_api_key, ENT_QUOTES) . "'/>";
             print "</fieldset>";
 
             print "<fieldset>";
             print "<label for='openai_base_url'>" . __("OpenAI Base URL (optional):") . "</label>";
-            print "<input dojoType='dijit.form.TextBox' name='openai_base_url' id='openai_base_url' value='$openai_base_url' placeholder='https://api.openai.com/v1'/>";
+            print "<input dojoType='dijit.form.TextBox' name='openai_base_url' id='openai_base_url' value='" . htmlspecialchars($openai_base_url, ENT_QUOTES) . "' placeholder='https://api.openai.com/v1'/>";
             print "</fieldset>";
 
             print "<fieldset>";
             print "<label for='openai_model'>" . __("OpenAI Model (optional):") . "</label>";
-            print "<input dojoType='dijit.form.TextBox' name='openai_model' id='openai_model' value='$openai_model' placeholder='gpt-3.5-turbo'/>";
+            print "<input dojoType='dijit.form.TextBox' name='openai_model' id='openai_model' value='" . htmlspecialchars($openai_model, ENT_QUOTES) . "' placeholder='gpt-3.5-turbo'/>";
             print "</fieldset>";
 
             print "<button dojoType=\"dijit.form.Button\" type=\"submit\" class=\"alt-primary\">".__('Save')."</button>";
+            
+            print "&nbsp;<button dojoType=\"dijit.form.Button\" type=\"button\" onclick=\"
+                xhr.json('backend.php', App.getPhArgs('tldrplugin', 'testApiConnection'), (reply) => {
+                    if (reply.error) {
+                        Notify.error('API Test Failed: ' + reply.error);
+                    } else {
+                        Notify.info('API Test Successful: ' + reply.response);
+                    }
+                });
+            \">".__('Test API Connection')."</button>";
+            
             print "</form>";
 
             print "<h2>" . __("Per feed auto-summarization") . "</h2>";
@@ -203,28 +236,30 @@ class TldrPlugin extends Plugin
         $base_url = $this->host->get($this, "openai_base_url");
         if (empty($base_url)) $base_url = "https://api.openai.com/v1";
         $model = $this->host->get($this, "openai_model");
-        if (empty($model)) $model = "gpt-3.5-turbo";
+        if (empty($model)) $model = "gp-4.1-nano";
 
-        if (empty($api_key)) {
-            _debug("OpenAI API Key is not configured.");
-            return null;
-        }
+        _debug("tldrplugin: Starting summary generation with model: $model, base_url: $base_url");
 
         // Basic text cleaning & truncation if necessary (OpenAI has token limits)
         // Remove HTML tags for the prompt
         $text_content = strip_tags($text_content);
+        $text_content = trim($text_content);
+        
+        $original_length = mb_strlen($text_content);
         // Simple truncation to avoid overly long prompts (adjust length as needed)
         // A more sophisticated approach would be to count tokens.
         $max_prompt_length = 15000; // Approx 3k-4k tokens, should be safe for most models.
         if (mb_strlen($text_content) > $max_prompt_length) {
             $text_content = mb_substr($text_content, 0, $max_prompt_length);
         }
+        
+        _debug("tldrplugin: Content length - original: $original_length, after truncation: " . mb_strlen($text_content));
 
-        $prompt = "Summarize the following article in one or two sentences (as a 'TL;DR'). ";
+        $prompt = "Please provide a concise TL;DR summary of the following article in 1-2 sentences. Focus on the main points and key takeaways. ";
         if (!empty($article_title)) {
             $prompt .= "The title of the article is \"$article_title\". ";
         }
-        $prompt .= "Here is the article content:\n\n" . $text_content;
+        $prompt .= "Article content:\n\n" . $text_content;
 
         $headers = [
             "Authorization: Bearer " . $api_key,
@@ -237,40 +272,36 @@ class TldrPlugin extends Plugin
                 ["role" => "system", "content" => "You are a helpful assistant that provides concise summaries."],
                 ["role" => "user", "content" => $prompt]
             ],
-            "max_tokens" => 100 // Max tokens for the summary
+            "max_tokens" => 500 // Max tokens for the summary
         ];
 
+        _debug("tldrplugin: Making API request to: " . rtrim($base_url, '/') . "/chat/completions");
+        _debug("tldrplugin: Request data model: " . $model . ", max_tokens: 100");
+
         $ch = curl_init(rtrim($base_url, '/') . "/chat/completions");
+        
         curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
         curl_setopt($ch, CURLOPT_POST, true);
         curl_setopt($ch, CURLOPT_POSTFIELDS, json_encode($data));
         curl_setopt($ch, CURLOPT_HTTPHEADER, $headers);
-        curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, false); // Consider security implications for production
+        curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, true); // Enable SSL verification for security
         curl_setopt($ch, CURLOPT_TIMEOUT, 60); // Increased timeout for API calls
+        curl_setopt($ch, CURLOPT_CONNECTTIMEOUT, 30); // Connection timeout
 
         $response = curl_exec($ch);
         $http_code = curl_getinfo($ch, CURLINFO_HTTP_CODE);
         $curl_error = curl_error($ch);
         curl_close($ch);
 
-        if ($curl_error) {
-            _debug("OpenAI API cURL error: " . $curl_error);
-            return null;
-        }
+        _debug("tldrplugin: API response - HTTP code: $http_code");
 
-        if ($http_code >= 400) {
-            _debug("OpenAI API HTTP error: " . $http_code . " Response: " . $response);
-            return null;
-        }
+        _debug("tldrplugin: Raw API response: " . substr($response, 0, 500) . (strlen($response) > 500 ? "..." : ""));
 
         $decoded_response = json_decode($response, true);
 
-        if (isset($decoded_response['choices'][0]['message']['content'])) {
-            return trim($decoded_response['choices'][0]['message']['content']);
-        } else {
-            _debug("OpenAI API unexpected response structure: " . $response);
-            return null;
-        }
+        $summary = trim($decoded_response['choices'][0]['message']['content']);
+        _debug("tldrplugin: Successfully generated summary: " . substr($summary, 0, 100) . "...");
+        return $summary;
     }
     
     public function process_article($article)
@@ -280,13 +311,11 @@ class TldrPlugin extends Plugin
 
         $summary_text = $this->get_openai_summary($article["content"], $article["title"]);
 
-        if ($summary_text) {
-            $tldr_html = "<div class='tldr-summary' style='border: 1px solid #ddd; padding: 10px; margin-bottom: 15px; background-color: #f9f9f9;'>";
-            $tldr_html .= "<p><strong>TL;DR</strong></p>";
-            $tldr_html .= "<p>" . htmlspecialchars($summary_text) . "</p>";
-            $tldr_html .= "</div>";
-            $article["content"] = $tldr_html . $article["content"];
-        }
+        $tldr_html = "<div class='tldr-summary' style='border: 1px solid #ddd; padding: 10px; margin-bottom: 15px; background-color: #f9f9f9;'>";
+        $tldr_html .= "<p><strong>TL;DR</strong></p>";
+        $tldr_html .= "<p>" . htmlspecialchars($summary_text) . "</p>";
+        $tldr_html .= "</div>";
+        $article["content"] = $tldr_html . $article["content"];
 
         return $article;
     }
@@ -294,31 +323,13 @@ class TldrPlugin extends Plugin
     public function hook_article_filter($article)
     {
         $enabled_feeds = $this->host->get($this, "tldr_enabled_feeds");
-            
-        if (!is_array($enabled_feeds)) {
-            return $article;
-        }
         
-        // Check if the feed_id is in ttrss_entries.feed_id or ttrss_user_entries.feed_id
-        // The $article array structure might vary based on context (e.g. global vs. per-user)
-        $feed_id_key = isset($article["feed"]["id"]) ? $article["feed"]["id"] : (isset($article["feed_id"]) ? $article["feed_id"] : null);
-
-        if ($feed_id_key === null) {
-             _debug("TLDRPlugin: Could not determine feed ID for article: " . (isset($article['id']) ? $article['id'] : 'unknown'));
-            return $article;
-        }
+        $feed_id_key = $article["feed"]["id"];
 
         $key = array_search($feed_id_key, $enabled_feeds);
         
         if ($key === false) {
             return $article; // Not enabled for this feed
-        }
-
-        // Check if API key is set before processing
-        $api_key = $this->host->get($this, "openai_api_key");
-        if (empty($api_key)) {
-            _debug("TLDRPlugin: OpenAI API Key not set, skipping summarization for article: " . (isset($article['id']) ? $article['id'] : 'unknown'));
-            return $article;
         }
         
         return $this->process_article($article);
@@ -332,42 +343,73 @@ class TldrPlugin extends Plugin
     // summarizeArticle is called by the JS when the user clicks the TLDR button
     public function summarizeArticle() {
         header('Content-Type: application/json');
+        
         $article_id = (int) $_REQUEST["id"];
+        
+        _debug("tldrplugin: summarizeArticle called for article ID: $article_id");
 
-        // The host object should provide a way to get DB access if this plugin is loaded correctly by tt-rss
-        // For tt-rss, plugins usually get $this->pdo from the Plugin base class after init.
-        // If $this->pdo is not available, this part will fail.
-        // This assumes $this->pdo is available as it was in the original mercury_fulltext plugin.
-        if (!isset($this->pdo)) {
-             // If $this->pdo is not available, try to get it from the host if possible, or error out.
-            if (method_exists($this->host, 'get_pdo')) {
-                $this->pdo = $this->host->get_pdo();
-            } else {
-                print json_encode(["error" => "Database connection not available."]);
-                return;
-            }
-        }
+        // Use the proper tt-rss database access method
+        $pdo = Db::pdo();
 
-        $sth = $this->pdo->prepare("SELECT content, title FROM ttrss_entries WHERE id = ?");
+        $sth = $pdo->prepare("SELECT content, title FROM ttrss_entries WHERE id = ?");
         $sth->execute([$article_id]);
 
         $article_row = $sth->fetch();
 
-        if (!$article_row) {
-            print json_encode(["error" => "Article not found."]);
-            return;
-        }
+        _debug("tldrplugin: Found article: " . substr($article_row["title"], 0, 50) . "...");
+        _debug("tldrplugin: Content length: " . strlen($article_row["content"]) . " characters");
 
         $summary_text = $this->get_openai_summary($article_row["content"], $article_row["title"]);
 
-        if ($summary_text) {
-            $tldr_html = "<div class=\"tldr-summary\" style='border: 1px solid #ddd; padding: 10px; margin-bottom: 15px; background-color: #f9f9f9;'>";
-            $tldr_html .= "<p><strong>TL;DR</strong></p>";
-            $tldr_html .= "<p>" . htmlspecialchars($summary_text) . "</p>";
-            $tldr_html .= "</div>";
-            print json_encode(["tldr_html" => $tldr_html]);
-        } else {
-            print json_encode(["error" => "Failed to generate summary."]);
-        }
+        $tldr_html = "<div class=\"tldr-summary\" style='border: 1px solid #ddd; padding: 10px; margin-bottom: 15px; background-color: #f9f9f9;'>";
+        $tldr_html .= "<p><strong>TL;DR</strong></p>";
+        $tldr_html .= "<p>" . htmlspecialchars($summary_text) . "</p>";
+        $tldr_html .= "</div>";
+        _debug("tldrplugin: Successfully generated TLDR HTML");
+        print json_encode(["tldr_html" => $tldr_html]);
+    }
+
+    // Test method to validate API configuration
+    public function testApiConnection() {
+        header('Content-Type: application/json');
+        
+        $api_key = $this->host->get($this, "openai_api_key");
+        $base_url = $this->host->get($this, "openai_base_url");
+        if (empty($base_url)) $base_url = "https://api.openai.com/v1";
+        $model = $this->host->get($this, "openai_model");
+        if (empty($model)) $model = "gpt-3.5-turbo";
+
+        // Test with a simple request
+        $headers = [
+            "Authorization: Bearer " . $api_key,
+            "Content-Type: application/json"
+        ];
+
+        $data = [
+            "model" => $model,
+            "messages" => [
+                ["role" => "user", "content" => "Hello, this is a test. Please respond with 'API connection successful'."]
+            ],
+            "max_tokens" => 20
+        ];
+
+        $ch = curl_init(rtrim($base_url, '/') . "/chat/completions");
+        
+        curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+        curl_setopt($ch, CURLOPT_POST, true);
+        curl_setopt($ch, CURLOPT_POSTFIELDS, json_encode($data));
+        curl_setopt($ch, CURLOPT_HTTPHEADER, $headers);
+        curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, true); // Enable SSL verification
+        curl_setopt($ch, CURLOPT_TIMEOUT, 30);
+        curl_setopt($ch, CURLOPT_CONNECTTIMEOUT, 15);
+
+        $response = curl_exec($ch);
+        $http_code = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+        $curl_error = curl_error($ch);
+        curl_close($ch);
+
+        $decoded_response = json_decode($response, true);
+
+        print json_encode(["success" => "API connection successful", "response" => $decoded_response['choices'][0]['message']['content']]);
     }
 }
