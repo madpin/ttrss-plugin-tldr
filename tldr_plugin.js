@@ -21,8 +21,8 @@ Plugins.tldrplugin = {
 
           if (App.isCombinedMode()) Article.cdmMoveToId(id);
 
-        } else if (reply && reply.error) {
-          Notify.error("Failed to generate TL;DR: " + reply.error);
+        } else if (reply && reply.message) { // Changed from reply.error to reply.message
+          Notify.error(reply.message);
         }
         else {
           Notify.error("Unknown error occurred while generating TL;DR.");
